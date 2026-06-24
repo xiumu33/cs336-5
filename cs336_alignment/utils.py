@@ -57,3 +57,9 @@ def tokenize_prompt_and_output(
         "response_mask":response_mask.to(torch.bool)
     }
 
+def compute_entropy(logits):
+
+    with torch.no_grad():
+        log_prob=torch.nn.functional.log_softmax(logits,dim=-1)
+        prob=torch.exp(log_prob)
+    return -(torch.sum(prob*log_prob,dim=-1))
