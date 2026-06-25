@@ -63,3 +63,34 @@ def compute_entropy(logits):
         log_prob=torch.nn.functional.log_softmax(logits,dim=-1)
         prob=torch.exp(log_prob)
     return -(torch.sum(prob*log_prob,dim=-1))
+
+def get_response_log_probs(
+        model,
+        input_ids:torch.Tensor,
+        labels:torch.Tensor,
+        return_token_entropy:bool=False
+)->dict[str,torch.Tensor]:
+    logits=model(input_ids).logits
+    log_probs=torch.nn.functional.log_softmax(logits,dim=-1)
+    log_probs=log_probs.gather(dim=-1,index=labels.unsqueeze(-1)).squeeze(-1)
+    if return_token_entropy:
+        return{
+            "log_probs":log_probs,
+            "token_entropy":compute_entropy(logits)
+        }
+    return{
+        "log_probs":log_probs
+    }
+
+def masked_normalize(
+        tensor,
+        mask,
+        normalize_constant,
+        dim
+):
+    masked_tensor=tensor*mask.float()
+    if dim is not None:
+        res=torch.sum(masked_tensor,dim=dim)/normalize_constant
+    else:
+        res=torch.sum(masked_tensor)/normalize_constant
+    return res
