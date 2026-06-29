@@ -94,3 +94,19 @@ def masked_normalize(
     else:
         res=torch.sum(masked_tensor)/normalize_constant
     return res
+
+
+def stf_microbatch_train_step(
+        policy_log_probs,
+        response_mask,
+        gradient_accumulation_steps,
+        normalize_constant=1.0,
+):
+    response_lengths=response_mask.sum(dim=-1)
+
+    masked_log_probs=policy_log_probs*response_mask.float()
+    sequence_losses=masked_log_probs.sum(dim=-1)/response_lengths.clamp(min=-1)
+
+    loss=-sequence_losses.mean()/gradient_accumulation_steps
+    loss.backward()
+    return loss,{}
