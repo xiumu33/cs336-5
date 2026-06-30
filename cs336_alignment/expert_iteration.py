@@ -1,0 +1,92 @@
+from transformers import AutoModelForCausalLM,AutoTokenizer
+import torch
+import json
+import logging
+import os
+from tqdm import tqdm
+from tensorboardX import SummaryWriter
+from vllm import LLM,SamplingParams
+from typing import List
+import random
+
+try:
+    from drgrpo_grader import r1_zero_reward_fn
+    import utils
+    from math_baseline import evaluate
+except:
+    from .drgrpo_grader import r1_zero_reward_fn
+    from . import utils
+    from .math_baseline import evaluate
+logging.getLogger("vllm").setLevel(logging.WARNING)
+os.environ["VLLM_LOGGONG_LEVEL"]="WARNING"
+def load_policy_into_vllm_instance(
+        policy,
+        llm:LLM,
+):
+    state_dict=policy.state_dict()
+    llm_model=llm.llm_engine.model_executor.driver_worker.model_runner.model
+    llm_model.load_weights(state_dict.items())
+def get_response(
+        vllm_model:LLM,
+        prompts:List[str],
+        eval_sampling_params,
+)->None:
+    outputs=vllm_model.generate(prompts,eval_sampling_params)
+    res=[output.outputs for output in outputs]
+    return res
+
+device='cuda' if torch.cuda.is_available() else 'mps'
+model_path='models/Qwen2.5-0.5B/qwen/Qwen2.5-0.5B'
+model=AutoModelForCausalLM.from_pretrained(
+    model_path
+)
+model=model.to(device)
+
+llm=LLM(model=model_path,gpu_memory_utilization=0.4)
+
+sampling_params=SamplingParams(
+    temperature=1.0,top_p=1.0,max_tokens=1024,stop=["\n"],n=4
+)
+
+tokenizer=AutoTokenizer.from_pretrained(model_path)
+
+optimizer=torch.optim.AdamW(model.parameters(),lr=1e-5)
+
+reward_fn=r1_zero_reward_fn
+r1_zero_prompt="""
+                A conversation between User and Assistant. The User asks a question, and the Assistant solves it. The Assistant first thinks about the reasoning process in the mind and then provides the User with the answer. The reasoning process is enclosed within <think> </think> and answer is enclosed within <answer> </answer> tags, respectively, i.e., <think> reasoning process here </think> <answer> answer here </answer>.
+                User: {question}
+                Assistant: <think>
+                """
+
+gsm8k=[]
+with open("data/gsm8k/train.jsonl")as f:
+    lines=f.readlines()
+    for line in lines:
+        gsm8k.append(json.loads(line))
+prompts_to_be_filtered=[]
+answer_to_be_filtered=[]
+prompts_filtered=[]
+answer_filtered=[]
+for dict in gsm8k:
+    prompts_to_be_filtered.append(r1_zero_prompt.format(question=dict['question']))
+    answer_to_be_filtered.append(dict['answer'][dict['answer'].find("####") + 5:])
+n_ei_step=5
+local_step=0
+for i in range(n_ei_step):
+    print(f"ei step: {i+1}")
+    load_policy_into_vllm_instance(model,llm)
+    indices=list(range(len(prompts_to_be_filtered)))
+    indices=random.sample(indices,k=1024)
+    prompts_to_be_filtered_part=[prompts_to_be_filtered[i] for i in indices]
+    answers_to_be_filtered_part=[answer_to_be_filtered[i] for i in indices]
+    outputs=get_response(llm,prompts_to_be_filtered_part,sampling_params)
+    for j in range(len(outputs)):
+        for k in range(len(outputs[j])):
+            result=reward_fn(outputs[j][k].text,answers_to_be_filtered_part[j])
+            if result['format_reward']==1.0 and result['answer_reward']==1.0:
+                prompts_filtered.append(prompts_to_be_filtered_part[j])
+                answer_filtered.append(outputs[j][k].text)
+    print(f"correct answer: {len(prompts_filtered)}")
+
+    
