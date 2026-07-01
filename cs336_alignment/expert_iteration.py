@@ -89,4 +89,45 @@ for i in range(n_ei_step):
                 answer_filtered.append(outputs[j][k].text)
     print(f"correct answer: {len(prompts_filtered)}")
 
+    epoch=3
+    batch_size=8
+    micro_batch_size=1
+    gradient_accumulation_steps=batch_size//micro_batch_size
+    log_directory='cs336_alignment/ei_logs'
+
+    writer=SummaryWriter(log_directory)
+    for j in range(epoch):
+        pbar=tqdm(range(len(prompts_filtered)//micro_batch_size),desc=f"Epoch {j+1}/{epoch}")
+        for j in pbar:
+            prompt_strs=prompts_filtered[j*micro_batch_size:j*micro_batch_size+micro_batch_size]
+            answer_strs=answer_filtered[j*micro_batch_size:j*micro_batch_size+micro_batch_size]
+            train_batch=utils.tokenize_prompt_and_output(prompt_strs,answer_strs,tokenizer)
+            result_dict=utils.get_response_log_probs(model,train_batch['input_ids'].to(device),train_batch['label'].to(device))
+            log_probs=result_dict['log_probs']
+            loss,log_info=utils.stf_microbatch_train_step(log_probs,train_batch['response_mask'].to(device),gradient_accumulation_steps)
+            writer.add_scalar('train/loss',loss.item(),local_step)
+            if (local_step+1)%gradient_accumulation_steps==0 or len(prompts_filtered)<batch_size:
+                optimizer.step()
+                optimizer.zero_grad()
+            
+            pbar.set_postfix({'Loss':f"{loss.item():.4f}",'Step':local_step})
+
+            if(local_step<=500 and local_step%100==0) or (local_step<=2000 and local_step%500==0) or (local_step>2000 and local_step%1000==0):
+                save_directory=f"{log_directory}/{local_step}"
+
+                os.makedirs(save_directory,exist_ok=True)
+
+                load_policy_into_vllm_instance(model,llm)
+
+                accuracy,type1_num,type2_num,type3_num=evaluate(save_directory,llm)
+
+                print(f"accuracy on test dat at training step {local_step} is {accuracy}")
+
+                writer.add_scalar('val/accuracy', accuracy, local_step)
+                writer.add_scalar('val/type1', type1_num, local_step)
+                writer.add_scalar('val/type2', type2_num, local_step)
+                writer.add_scalar('val/type3', type3_num, local_step)
+            local_step += 1
+
+
     
